@@ -1,0 +1,692 @@
+---
+title: "NBA Advanced Stats Analysis"
+author: 'Frank Chen: 400238573'
+date: "09/03/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# R Environment
+library(dplyr)
+library(ggplot2)
+library(knitr)
+library(dplyr)
+library(tidyverse)
+library(magrittr)
+library(knitr)
+library(stringr)
+library(readr)
+library(lubridate)
+library(patchwork)
+library(scales)
+library(ggpubr)
+library(grid)
+```
+
+## Introduction
+
+For this final project capitulating the HTHSCI 1M03 course, I wanted to investigate a long-time passion of mine: the National Basketball Association. 
+
+## Data
+
+The data was obtained from Kaggle, found here:
+
+https://www.kaggle.com/pablote/nba-enhanced-stats#2012-18_officialBoxScore.csv
+
+It includes a summary of basic and advanced NBA stats from 2012-2018 for each regular season game in that time.
+
+This data is interesting because, in basketball, there's hot debate surrounding the shot selection and the importance of some stats over others towards winning. Different teams prioritze different actions, and the effectiveness of such actions is reflected statisically.
+
+Of course, you can't do it all -- to find these metrics, this data analysis report looka at statistics that the winningest teams tend to share and those they sacrifice. We also hope to see how the game has changed over time and how teams and organizations emphasize specific stats to optimize winning. 
+
+Ultimately, finding trends to optimize success helps NBA teams and the cities that root for them.
+
+**Research Questions:**
+
+- What statistics do winning teams share that contributes to their success the most?
+
+- How has the understanding of these winning stats changed as coaches game plan differently based on the knowledge of mistakes in previous years? (ex., do teams shoot more threes now?)
+
+## Glossary of NBA Stats
+
+In case you don't know these stats, here is a summary, obtained from 
+https://www.basketball-reference.com/about/glossary.html and personal knowledge.
+
+Basics:
+
+- PTS: points
+
+- AST: assists
+
+- (O/D/T)RB: (Offensive/Defensive/Total) rebounds
+
+- TO: turnovers
+
+- STL: steals
+
+- BLK: blocks
+
+- PF: personal fouls
+
+- FGA: field goals attempted
+
+- FGM: field goals made
+
+- FG%: field goal percentage ($\frac{FGA}{FGM}*100\%$)
+
+- 2P: two-pointers
+
+- 3P: three-pointers
+
+- FT: free throws
+
+Advanced:
+
+- TS: true shooting - intended as more accurate measure of team shooting efficiency
+
+- eFG: effective field goal percentage - adjusts FG% to account for higher point value of threes. Measure of the 2P% necessary to match output of a player shooting 2s and 3s.
+
+- PPS: points per shot, measures team efficiency
+
+- FIC/FIC40: sum of offensive and defensive stats given different weights to replicate team impact on floor, can be scaled to 40 minutes. 
+
+- (O/D)RTG, EDiff: used to measure total offensive/defensive output, EDiff measures the difference bewteen ORTG and DRTG
+
+- AST/TO Ratio: measures ball control of a team
+
+- STL/TO Ratio: measures defensive output against potential offensive liability
+
+- Pace/Poss: number of offensive possessions the team is accountable for
+
+
+## Data Wrangling Plan
+
+**Iteration 1**
+
+`Conversion to $tidy$ format.`
+
+a. Read in the data
+
+b. Take a look at the stats
+
+- Note: This data is not in $tidy$ format given that it fails the rule: each observation must have its own row. Because the official name is the primary key in this data, the same game is listed three times to account for each referee. Some basic renaming and data manipulation to make it easier to pivot the data into $tidy$ form. 
+
+c. Check the amount of times each official appears to see if lump is necessary.
+
+d. Make official names one column in preparation for pivoting. 
+
+e. Recode official names as a factor.
+
+f. Lump officials with under 3 seasons (246 games) of experience.
+
+g. Delete old official name columns
+
+h. Convert data to $tidy$ data by pivoting
+
+i. Replace NAs from pivoting with 0s
+
+```{r, eval = TRUE, echo = TRUE}
+# a)
+stats <- read_csv("C:/Users/frank/OneDrive/Documents/NBA_Stats/2012-18_officialBoxScore.csv")
+# b)
+glimpse(stats)
+
+# c)
+check_off <- stats %>%
+  select(offLNm) %>%
+  group_by(offLNm) %>%
+    dplyr::summarize(num_off = length(offLNm)) 
+
+#kable(check_off)
+kable(head(check_off), caption = "Truncated List of Referees and Games Officiated")
+
+#Some refs barely have referee games, lump them into a section called "Other"
+stats <- stats %>%
+  # d) and e)
+  mutate(., off = as_factor(str_c(offFNm, offLNm, sep = "_")),
+         # f)   
+         off = fct_lump_min(off, 246),
+         # Add a value column for pivoting purposes later on
+         val = 1) %>%
+  # g)
+  select(., -offFNm, -offLNm) %>%
+  # h)
+  pivot_wider(., names_from = off,
+              values_from = val,
+              values_fn = list(val = length)) %>%
+  # i)
+  mutate_if(., is.numeric, ~replace_na(., 0))
+```
+
+**Iteration 2**
+
+`Convert data to tidy data, remove columns and modify names, recode factors, and modify date-times.`
+
+a. Check for NA values.
+
+b. Remove useless columns
+
+- Some columns are irrelevant, such as the team division, or minutes played by each team. Some columns contained stats rarely talked about in basketball analytics and by fans were discarded. Such include: points by quarters, teamBLKR, and many more. Also, metrics like BLK% are generally used for players, not for team analyses.
+
+c. Turn column names to lowercase
+
+d. Add a _ in column names for separation and clarity
+
+e. $team_abbr$, $team_conf$, $team_rslt$, $oppt_abbr$, $oppt_conf$, $oppt_rslt$ should all be coded as factors
+
+f. Convert to dates to date-time and delete previous date and time separate columns.
+
+g. Check levels of columns mentioned in e).
+
+
+```{r, eval = TRUE, echo = TRUE}
+# function written to reorder the team names levels by descending 
+# alpha order for a plot later
+fct_sort = function(f, .fun = sort) {
+  fct_relevel(f, .fun(levels(f), decreasing = TRUE))
+}
+
+# a)
+any(is.na(stats))
+
+# No NA values
+stats1 <- stats %>%
+  #slice(1:24) %>%
+  # b)
+  select(., -seasTyp, -teamDiv, -teamMin, -teamDayOff, -teamLoc,
+         -teamBLKR, -`teamPlay%`, -teamAR, -`teamASST%`, -`teamBLK%`,
+         -`teamSTL%`, -`teamTO%`, -`teamOREB%`, -`teamDREB%`, 
+         -c(opptAbbr:poss), -c(Tony_Brothers:Gediminas_Petraitis)) %>%
+  # c)
+  rename_all(tolower) %>%
+  # d)
+  setNames(gsub("team", "team_", names(.))) %>%
+  mutate(., 
+         # e)
+         team_abbr = fct_sort(as_factor(team_abbr)),
+         team_conf = as_factor(team_conf),
+         team_rslt = fct_relevel(as_factor(team_rslt), "Win", "Loss"),
+         # f)
+         dttm = parse_datetime(str_c(gmdate, gmtime, sep = " ")),
+         # add this to for pivoting the data
+         val = 1) %>%
+  # delete these columns after using them in mutate above
+  select(., -gmdate, -gmtime) 
+
+# g)
+levels(stats1$team_abbr)
+levels(stats1$team_conf)
+levels(stats1$team_rslt)
+``` 
+
+## Iteration 3:
+
+`Purpose is to manipulate the actual data values for better visualization and analysis.`
+
+a. Convert STL/TO ratio into decimals.
+
+b. Add columns for points scored in regulation and overtime (OT).
+
+c. Add boolean column indicating whether game went to OT.
+
+d. Delete the columns representing points by quarters.
+
+e. Reorder columns so identifiers like time, team playing, win/loss, etc., are close together, also so basic stats, percentage stats, and advanced stats are grouped together and are in conventional order: PTS, AST, ORB, DRB, TRB.
+
+f. Prepare a summary table.
+
+```{r, echo = TRUE, eval = TRUE}
+stats2 <- stats1 %>%
+  # a)
+  mutate(., `team_stl/to` = `team_stl/to`/100,
+         # b)
+         team_reg_pts = team_pts1 + team_pts2 + team_pts3 + team_pts4,
+         team_ot_pts = team_pts5 + team_pts6 + team_pts7 + team_pts8,
+         # c) 
+         ot = if_else(team_ot_pts > 0, TRUE, FALSE)
+         ) %>%
+  # d)
+  select(., -c(team_pts1:team_pts8)) %>%
+  # e)
+  select(., dttm, team_abbr:team_rslt, ot, team_pts, team_reg_pts,
+         team_ot_pts, team_ast, team_orb:team_trb, team_to:pace) 
+# f) 
+# summary tables created using the papeR 
+# (Hofner, B., 2020)
+kable(papeR::summarize_numeric(as.data.frame(stats2)), caption = "NBA Statistics Summary of Numeric Data")
+kable(papeR::summarize_factor(as.data.frame(stats2)), caption = "NBA Statistics Summary of Factor Data")
+
+glimpse(stats2)
+```
+
+The tidy data contains the unique identifiers of date-time and team. This is divided into two rows: the first representing the home team and the second representing the away team of the game played in that day and time. The following columns represent useful team statistics measured in some capacity of that specific game played.
+
+With workable data, we will try to answer some of our questions:
+
+## Results/Discussion
+
+## Question 1
+
+`1. What statistics do winning teams share that contributes to their success the most?`
+
+First, which teams won the most over this time period?
+
+```{r, eval = TRUE, echo = TRUE}
+plot <- stats2 %>%
+  # Take only the wins 
+  filter(., team_rslt == "Win") %>%
+  # Group by team and count number of wins using summarize
+  group_by(team_abbr) %>%
+  summarize(n = n()) %>%
+  ggplot(aes(y = fct_reorder(team_abbr, n), x = n)) +
+  geom_col() + 
+  theme_minimal() +
+  theme(line=element_blank()) +
+  labs(x = "Games", y = "Team", fill = "Wins")
+```
+Modifications to the data. The data was filtered for only wins, and this was calculated by grouping the data by teams and counting the number of rows for each team.
+
+```{r, out.width = "700 px", out.height = "350 px", fig.align = "center", fig.cap = "Sum of wins and losses of NBA teams over 2012-2018."}
+plot + plot_annotation("Win/Loss from 2012-2018 of NBA teams")
+```
+
+From Figure 1, we can see which teams performed the best and worst in this time frame. Taking the top 10 and bottom 10 teams, a comparison of stats will be performed. By looking at statistics of the winning group that far outweigh stats of the losing group, it is possible to identify metrics that correlate to success.
+
+Top 10 teams: GS, SA, HOU, LAC, OKC, TOR, MIA, IND, POR, CLE 
+
+Bottom 10 teams: MIL, DET, BKN, NY, MIN, PHO, SAC, LAL, PHI, ORL
+
+```{r, echo = TRUE, eval = TRUE}
+# Vector used for creating colour coded columns
+cols <- c("AST"="magenta","ORB"="green","DRB"="blue",
+          "STL" = "cyan", "BLK" = "black", "TO" = "purple")
+
+grp1 <- stats2 %>%
+  # Choose only the top 10 teams
+  filter(., str_detect(team_abbr,
+                       "(?!SAC)(GS|SA|HOU|LAC|OKC|TOR|MIA|IND|POR|CLE)")) %>%
+  # Calculate medians for graphing the vertical lines on the plot (which increase clarity)
+  mutate(., med_ast = median(team_ast), med_orb = median(team_orb),
+         med_drb = median(team_drb), med_stl = median(team_stl),
+         med_blk = median(team_blk), med_to = median(team_to)) %>%
+  # Pivot data so that stat is in one column and can be graphed on an axis
+  pivot_longer(., c(team_ast, team_orb, team_drb, team_stl, team_blk,
+                    team_to), 
+               names_to = "stat",
+               values_to = "value") %>%
+  ggplot(aes(y = stat, x = value, fill = "Coral")) +
+  # Modify size of dots and whiskers of boxplot
+  geom_boxplot(lwd = 0.25, outlier.size = 0.35) +
+  # Create vertical lines on the plot for better comparisons
+  # Could have been done more efficiently after pivoting data, 
+  # but that would have not allowed the colours of lines
+  geom_vline(aes(xintercept = med_ast, colour = "AST"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_orb, colour = "ORB"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_drb, colour = "DRB"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_stl, colour = "STL"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_blk, colour = "BLK"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_to, colour = "TO"), linetype = "dashed") +
+  # Labels and Scales
+  labs(x = element_blank(), y = "Statistic", fill = "Winning Teams") +
+  scale_x_continuous(limits = c(0, 51)) +
+  scale_y_discrete(labels = c(team_ast = "AST", team_orb = "ORB", 
+                               team_drb = "DRB", team_stl = "STL", 
+                               team_blk = "BLK", team_to = "TO")) +
+  theme(axis.ticks = element_blank()) +
+  # Manually add scale for vertical lines
+  scale_colour_manual(name = "Medians", values = cols)
+
+grp2 <- stats2 %>%
+  # Choose bottom 10 teams
+  filter(., str_detect(team_abbr, "MIL|DET|BKN|NY|MIN|PHO|SAC|LAL|PHI|ORL")) %>%
+  # Calculate medians for graphing the vertical lines on the plot (which increase clarity)
+  mutate(., med_ast = median(team_ast), med_orb = median(team_orb),
+         med_drb = median(team_drb), med_stl = median(team_stl),
+         med_blk = median(team_blk), med_to = median(team_to)) %>%
+  # Pivot data so that stat is in one column and can be graphed on an axis
+  pivot_longer(., c(team_ast, team_orb, team_drb, team_stl, team_blk,
+                    team_to), 
+               names_to = "stat",
+               values_to = "value") %>%
+  ggplot(aes(y = stat, x = value)) +
+  geom_boxplot(lwd = 0.25, outlier.size = 0.35) +
+  # Vertical Lines
+  geom_vline(aes(xintercept = med_ast, colour = "AST"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_orb, colour = "ORB"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_drb, colour = "DRB"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_stl, colour = "STL"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_blk, colour = "BLK"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_to, colour = "TO"), linetype = "dashed") +
+  # Labels
+  labs(x = "Value", y = "Statistic") +
+  scale_x_continuous(limits = c(0, 51)) +
+  scale_y_discrete(labels = c(team_ast = "AST", team_orb = "ORB", 
+                               team_drb = "DRB", team_stl = "STL", 
+                               team_blk = "BLK", team_to = "TO")) +
+  theme(axis.ticks = element_blank()) +
+  # No legend for the fill
+  guides(fill = FALSE) +
+  # Manually add scale for vertical lines
+  scale_colour_manual(name = "Medians", values = cols)
+
+```
+Modifications to the data: filtered out only the best/worst teams so only values of those plots were used. Added via mutate a median column that contains the median values of the stats plotted. This is used for the plotting vertical lines on the plot, which are useful as they allow for better comparisons to be made. Data was pivoted longer, putting the statistics plotted above into one column so they could be plotted on one axis, useful for the clarity of the graph.
+
+```{r, out.width = "350 px", out.height = "700 px", fig.align = "center", fig.cap = "Basic stats disparity between the top 10 and worst 10 NBA teams during this time frame. The dashed line represents the median for each statistic across all 10 teams for ease of comparison between teams. Teams in A: GS, SA, HOU, LAC, OKC, TOR, MIA, IND, POR, CLE. Teams in B: MIL, DET, BKN, NY, MIN, PHO, SAC, LAL, PHI, ORL"}
+# Plot using patchwork
+grp1 / grp2 + plot_annotation("Stat Comparison of the winningest and worst NBA teams from 2012-2018",
+                            tag_levels = c("A", "B")) + 
+  # Use one common legend
+  plot_layout(guides = "collect")
+```
+
+Figure 2 shows that assists and steals may not be as impactful to winning as other statistics. It also reveals that better teams are worse at offensive rebounding. Discussed in further detail:
+
+**STL**
+
+Interestingly, we see here that the difference in both the distribution and median of steals between winning and non-winning teams is not very large. One possible contributor is the fact that STL and BLK are not necessarily metrics that measure defenses entirely well. (Franks et al. 2015) STLs are often risky, reaching in improperly by uncoordinated defenses or against savvy players (James Harden is a big example) can be detrimental more often than good. The act of going for a steal allows the offense to draw fouls and drive by you for an easy bucket, and teams who do it more may suffer from these consequences.
+
+**ORB**
+
+Furthermore, we see that teams who are worse are actually better in terms of offensive rebounds. I would be surprised that this is reflected in the data, if not for the 2019 Milwaukee Bucks, as well as other teams. A strategy the Bucks employ is to sacrifice the offensive rebound to get back on defense and being prepared to stopping the next possession. Chasing rebounds moves players out of position, and can lead to transition buckets. You lose the opportunity to score again, but gain coordination on the other end. It's possible that this is a reflection of the more organized defensive efforts of better teams. 
+
+**AST**
+
+In the data above, both good and bad teams share a similar median amount of assists. However, a look at the distributions reveals that good teams will more often pass the ball than poorer teams. It's fascinating, however, that this disparity is not larger. In today's NBA, optimizing shot quality through making extra passes and forcing enemy defensive rotations has been heavily emphasized, thus it's strange to see that this is not a major contributor to winning. 
+
+**TO and BLK**
+
+These statistics decrease and increase respectively with winning teams. This is expected: turn the ball over less, and you have more possessions to score. Blocked shots lead to defensive stops and often transition scoring. While the turnover distribution between the groups of teams are similar, the medians are different, suggesting that good teams are more consistent in having fewer turnovers. Consistency over the uniquely long 82-game NBA season is likely key to success.
+
+**DRB**
+
+Finally, we see an interesting trend where the top 5 teams defensively outrebound the bottom 5 teams. This is expected, but confusing, given that worse teams are better offensive rebounders, they should be even more capable of defensive rebounding. An article (Masheswaran et al., 2014) suggests that DRB is related to defensive capability, as opposing teams miss their shot attempts more. Another article (Mikolajec et al., 2013), suggests that decreased basket proximity with more spacing by better 3-point shooting teams result in this relationship.
+
+```{r, echo = TRUE, eval = TRUE}
+# Vector used to create manual legend for vertical lines
+cols <- c("FG%"="magenta","2P%"="green","3P%"="blue",
+          "FT%" = "cyan", "TS%" = "black", "eFG%" = "purple")
+
+grp3 <- stats2 %>%
+  filter(., str_detect(team_abbr,
+                       "(?!SAC)(GS|SA|HOU|LAC|OKC|TOR|MIA|IND|POR|CLE)")) %>%
+  mutate(., med_fg = median(`team_fg%`), `med_2p` = median(`team_2p%`),
+         med_3p = median(`team_3p%`), med_ft = median(`team_ft%`),
+         med_ts = median(`team_ts%`), med_efg = median(`team_efg%`)) %>%
+  pivot_longer(., c(`team_fg%`, `team_2p%`, `team_3p%`, `team_ft%`,
+                    `team_ts%`, `team_efg%`), 
+               names_to = "stat",
+               values_to = "value") %>%
+  #pivot_longer(., c(med_fg, med_2p, med_3p, med_ft, med_ts, med_efg),
+  #             names_to = "med",
+  #             values_to = "val") %>%
+  ggplot(aes(y = stat, x = value, fill = "Coral")) +
+  geom_boxplot(lwd = 0.25, outlier.size = 0.35) + 
+  # Plot horizontal lines corresponding to each statistic. Would have been done with pivot
+  # for one succinct geom_hline, however, that does not allow for colour modifications 
+  # (colour parameter requires "name of colour")
+  geom_vline(aes(xintercept = med_fg, colour = "FG%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_2p, colour = "2P%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_3p, colour = "3P%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_ft, colour = "FT%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_ts, colour = "TS%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_efg, colour = "eFG%"), linetype = "dashed") +
+  labs(x = element_blank(), y = "Statistic", fill = "Winning Teams") +
+  scale_x_continuous(limits = c(0, 1),
+                     labels = percent) +
+  scale_y_discrete(labels = c(`team_2p%` = "2P%", `team_3p%` = "3P%",
+                              `team_fg%` = "FG%", `team_ft%` = "FT%",
+                              `team_efg%` = "eFG%", `team_ts%` = "TS%"))+
+  theme(axis.ticks = element_blank()) +
+  scale_colour_manual(name = "Medians", values = cols)
+
+grp4 <- stats2 %>%
+  filter(., str_detect(team_abbr, "MIL|DET|BKN|NY|MIN|PHO|SAC|LAL|PHI|ORL")) %>%
+  mutate(., med_fg = median(`team_fg%`), `med_2p` = median(`team_2p%`),
+         med_3p = median(`team_3p%`), med_ft = median(`team_ft%`),
+         med_ts = median(`team_ts%`), med_efg = median(`team_efg%`)) %>%
+  pivot_longer(., c(`team_fg%`, `team_2p%`, `team_3p%`, `team_ft%`,
+                    `team_ts%`, `team_efg%`), 
+               names_to = "stat",
+               values_to = "value") %>%
+  ggplot(aes(y = stat, x = value)) +
+  geom_boxplot(lwd = 0.25, outlier.size = 0.35) +   
+  geom_vline(aes(xintercept = med_fg, colour = "FG%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_2p, colour = "2P%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_3p, colour = "3P%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_ft, colour = "FT%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_ts, colour = "TS%"), linetype = "dashed") +
+  geom_vline(aes(xintercept = med_efg, colour = "eFG%"), linetype = "dashed") +
+  labs(x = "Percent", y = "Statistic", fill = "Blue") +
+  scale_x_continuous(limits = c(0,1),
+                     labels = percent) +
+  scale_y_discrete(labels = c(`team_2p%` = "2P%", `team_3p%` = "3P%",
+                              `team_fg%` = "FG%", `team_ft%` = "FT%",
+                              `team_efg%` = "eFG%", `team_ts%` = "TS%")) +
+  theme(axis.ticks = element_blank()) +
+  guides(fill = FALSE) +
+  scale_colour_manual(name = "Medians", values = cols)
+
+```
+Modifications to the data: All modifications are the same as in Figure 2, but when pivoting the data the statistics placed into one column are different (these are shooting statistics). The reasoning and the usefulness behind these modifications can also be found as previously stated.
+
+```{r, out.width = "350 px", out.height = "700 px", fig.align = "center", fig.cap = "A comparison looking at the different shooting metrics of the best 5 and worst 5 NBA teams."}
+grp3 / grp4 + plot_annotation("Shooting %s of the winningest and worst NBA teams from 2012-2018", 
+                            tag_levels = c("A", "B")) + 
+  plot_layout(guides = "collect")
+```
+
+Figure 3 looks entirely at shooting percentage metrics. Undoubtedly, the better you shoot, the more points you are able to score. We see that reflected in this plot: every shooting metric leans in the favour of the winning group. This really underscores the importance of shooting in today's NBA, highlighting its change from the Shaq-era of post play. 
+
+**3P% and 2P%**
+
+However, given the advent of the three-point shot, I would have thought that 2P% wouldn't matter nearly as much. This might reflect the importance of finishing at the rim, a high percentage shot with similar value to the three-pointer (Romanowich, Bourret, & Vollmer, 2007). In the era where shooting is emphasized, interior finishing remains understated. Being able to hit contested layups can still allow you to be an effective, positive player. Examples of this include All-Stars Giannis Antetokounmpo, Ben Simmons, Joel Embiid, and Russell Westbrook all of whom have at some point in their careers shot 3s far below league average (NBA Advanced Stats, 2020). 
+
+```{r, eval = TRUE, echo = TRUE}
+plt_netrtg <- stats2 %>%
+  # take only the wins
+  filter(., team_rslt == "Win") %>%
+  group_by(team_abbr) %>%
+  # Add the median pace for each team as well as use the count function for the 
+  # number of wins per team
+  summarise(., med_rtg = median(team_ediff),
+            n = n()) %>%
+  ggplot(aes(x = med_rtg, y = n, colour = team_abbr)) +
+  geom_point() +
+  labs(y = "Wins", x = "Net Rating", colour = "Team")
+
+pltpace <- stats2 %>%
+  # take only the wins
+  filter(., team_rslt == "Win") %>%
+  group_by(team_abbr) %>%
+  # Add the median pace for each team as well as use the count function for the 
+  # number of wins per team
+  summarise(., med_pace = median(pace),
+            n = n()) %>%
+  ggplot(aes(x = med_pace, y = n, colour = team_abbr)) +
+  geom_point() +
+  labs(y = "Wins", x = "Pace", colour = "Team")
+  
+```
+Modifications to the data: filter only the wins for use in plotting the wins as an axis. Group by team to calculate the wins and median net rating or median pace using the summarize function. Median net rating and median pace are taken instead of using all rating and pace entries for a simpler plot. 
+
+\newpage
+```{r, out.width = "500 px", out.height = "350 px", fig.align = "center", fig.cap = "Median pace and Net Rating of each team over 2012-2018 graphed against amount of wins."}
+plt_netrtg / pltpace + 
+  plot_annotation("Team pace and rating correlated to wins",
+                          tag_levels = c("A", "B")) +
+  plot_layout(guides = "collect")
+```
+
+**Net Rating**
+
+From the plot, a trend of net rating to wins is visible. This indicates this is a reliable metric for predicting team success. Net rating is calculated as $ORTG - DRTG$ (Basketball-Reference, 2004). However, when plotting ORTG and DRTG on their own, no correlation is seen. This means teams can be exceptional at offense and average defensively, but still be one of the best teams in the league.
+
+**Pace**
+
+Looking at the final important stat: pace of the game, we don't see a relationship between pace and winning. Some teams prefer to play slow to optimize their shots, where other teams like to wear out their opponents and catch them in easy transition buckets. Both stratgeies work as seen above; this game plan is often based on the speeds, skills, and play styles of your players. 
+
+## Question 2
+
+`How has the understanding of these winning stats changed as coaches game plan differently based on the knowledge of mistakes in previous years? (ex., do teams shoot more threes now?)`
+
+```{r, eval = TRUE, echo = TRUE}
+plt1 <- stats2 %>%
+  # Select certain stats and time
+  select(., dttm, team_ast, team_orb, team_drb, team_stl, team_blk, team_to) %>%
+  # Change names for better facet labels
+  setNames(toupper(gsub("team_", "", names(.)))) %>%
+  # Make the statistics all one column for faceting by statistic
+  pivot_longer(., c(AST, ORB, DRB, STL, BLK, TO),
+               names_to = "stat",
+               values_to = "val") %>%
+  ggplot() +
+  # Plot loess line
+  geom_smooth(aes(x = DTTM, y = val)) +
+  # Display only the year on the axis
+  scale_x_datetime(date_labels = "%Y") +
+  # 45 degree angle x axis labs
+  guides(x = guide_axis(angle = 45)) +
+  # Plot graphs for each stat in 6 columns
+  facet_wrap(.~stat, ncol=6) + 
+  labs(x = "Time", y = "Value")
+  
+plt2 <- stats2 %>%
+  # Comments are the same as above, just selecting different stats.
+  select(., dttm, `team_fg%`, `team_ft%`, `team_2p%`, `team_3p%`, `team_ts%`,
+         `team_efg%`) %>%
+  setNames(toupper(gsub("team_", "", names(.)))) %>%
+  pivot_longer(., c(`FG%`, `FT%`, `2P%`, `3P%`, `TS%`, `EFG%`),
+               names_to = "stat",
+               values_to = "val") %>%
+  ggplot() +
+  geom_smooth(aes(x = DTTM, y = val)) +
+  scale_x_datetime(date_labels = "%Y") +
+  scale_y_continuous(labels = percent) +
+  guides(x = guide_axis(angle = 45)) +
+  facet_wrap(.~stat, ncol=6) + 
+  labs(x = "Time", y = "Percentage")
+```
+
+Modifications to the data: select only certain stats that are desired for plotting. Make names uppercase and in the format of AST, BLK, STL, etc. for better labels on the plot. Pivot to put stats into one column for plotting and faceting purposes.
+
+\newpage
+```{r, out.width = "400 px", out.height = "700 px", fig.align = "center", fig.cap = "Loess regression of trends in certain statistics from 2012-2018."}
+plt1/plt2 + plot_annotation("Trends in Basic and Shooting Statistics from 2012-2018",
+                            tag_levels = c("A", "B")) 
+```
+
+From the data shown, there are some very conservative trends present. Metrics such as number of STLs and BLKs per game have largely stayed the same. However, given that the NBA has been around for 74 years, and this is a snapshot of only 6, this is not unexpected. Interestingly, many of the stats that winning teams possessed over losing teams in Figures 2 and 3 show increases over time.
+
+**AST**
+
+Assists have enjoyed a small increase since 2012, especially trending upwards in recent years towards the end of the 2018-19 season. This makes sense: assists and finding the optimal shot has been shown to be positively correlated to winning. (Melnick, 2001)
+
+**DRB**
+
+Steadily rising across the years is DRB. As previously mentioned, DRBs may be an indicator of better defense throughout the years. More misses lead to more DRBs, and we see an increase in defensive boards (Masheswaran et al, 2014). With the top teams nowadays boasting stellar defenses over offenses (NBA Advanced Statistics, 2020), the growing development and importance of defense should not be understated.
+
+**ORB**
+
+We can see that ORBs are decreasing throughout the years, perhaps indicating that teams have begun to recognize that being coordinated on defense is more important. It seems coaches have began to include this more in their game plans. The decline of the "big man" in the NBA may also play a factor, with many teams without traditional centres, getting offensive rebounds is more difficult.  
+
+**2P% and 3P%**
+
+Interestingly, 2-pointers are being made more often. This may be due to the increased spacing of today's game, so it's easier to hit midrange shots and layups because teams are guarding the 3-point line more. 
+
+Surprisingly, 3-point % has not risen. This may be due to better coverages of 3s as the defense evolves. However, a look at a plot summarizing attempted shots shows definitely there have been more 3s attempted, followed by an increase in 3PM.
+
+```{r, echo = TRUE, eval = TRUE}
+plt3 <- stats2 %>%
+  # Comments are the same as Figure 4 (vars: plt1, plt2), just selecting different stats.
+  select(., dttm, team_3pa, team_3pm, team_2pa, team_2pm, team_fta, team_ftm) %>%
+  setNames(toupper(gsub("team_", "", names(.)))) %>%
+  pivot_longer(., c(`3PA`, `3PM`, `2PA`, `2PM`, `FTA`, `FTM`),
+               names_to = "stat",
+               values_to = "val") %>%
+  ggplot() +
+  geom_smooth(aes(x = DTTM, y = val)) +
+  scale_x_datetime(date_labels = "%Y") +
+  guides(x = guide_axis(angle = 45)) +
+  facet_wrap(.~stat, ncol=6) + 
+  labs(x = "Time", y = "Value")
+```
+Modifications to the data: the same as in Figure 5, just selecting different stats to be included. The reasoning and the usefulness behind these modifications can also be found as previously stated.
+
+\newpage
+```{r, out.width = "350 px", out.height = "700 px", fig.align = "center", fig.cap = "Attempted shots over time."}
+plt3 + plot_annotation("Types of shots attempted from 2012-2018")
+```
+
+**The Advent of the 3-pointer?**
+
+It's plain from the above that the league has been shooting and making more threes. It's well known that 3-pointers elicit more value from shots than 2-pointers (Marty & Lucey, 2017). However, from the data above, taking a league-median 3-point shooter (~35% in 2018 from Fig. 5) and 2-point shooter (~52% in 2018) gives the following: 
+
+$0.36*3 = 1.08$ points per shot
+$0.52*2 = 1.04$ points per shot
+
+0.04 points per shot is not a big difference! Of course, in most games, almost 100 shots are taken, and games are often decided by a point. Still, threes are important, but it should not be understated that 2-point shots can still be valuable contributors to winning. 
+
+**Spacing**
+
+As we can also see, a decrease in 2PA does not indicate similarly less 2PM, indicating that as a league, it is has become easier to score 2P shots. This again can be possibly attributed to the spacing of today's game. Giannis and the Bucks is a prime exaple of this: the spacing of the countless 3-point shooters allows Giannis to wreck inside. Resultantly, he maintains a well above league average career 52.6% FG (which includes 2P% and 3P%) while having an abysmal 28.5% 3P%. (NBA Advanced Statistics, 2020)
+
+**FT%, FTA, FTM**
+
+Interestingly, there is a decrease in FTA and FTM. Getting to the line can often be more valuable than a shot attempt: using 2018 league median FT% form Figure 5,
+
+$0.36*3 = 1.08$ points per shot (3s)
+$0.52*2 = 1.04$ points per shot (2s)
+$0.75*2 = 1.50$ points per shot (FT)
+
+This explains the increase in FT% makes sense: players would want to convert these "free" shots. The decrease in FTA, and resultantly FTM, might be attributed to coaches and players fouling less. Given the power of free throws, avoiding handing them out to opposing players is wise.
+
+## Discussion and Conclusion
+
+Ultimately, analysis of NBA data sourced from Kaggle has led to some valuable insights on facets of the game. From this data, we have found some predicted as well as unlikely answers to our research questions. To recapitualte:
+
+- What statistics do winning teams share that contributes to their success the most?
+
+- How has the understanding of these winning stats changed as coaches game plan differently based on the knowledge of mistakes in previous years? (ex., do teams shoot more threes now?)
+
+We found that offensive rebounds have been declining in the league and are not correlated with team success, while better shooting clearly is related to winning, and has been improving within the league. In my analysis, increases in defensive rebounds (which may be indicative of defensive prowess), blocks, and decreases in turnovers are factors indicative of winning, and following suit from 2012-2018 these metrics increased/decreased appropriately. The league has been attempting and making more threes, leaving increased spacing for easier 2-pointers.
+
+However, there are major limitations to this project. In figures 2 and 3, only 20/30 NBA teams were sampled, and compared solely on median values. Plotting different stats on the same axis may have diminished trends, but STLs, BLKs, and TOs were also plotted independently revealing no major changes in trend. These are not shown for report brevity. Future work would look to more sophisticatedly statistically analyze the graphs plotted as well as to delve deeper into advanced stats to explain speculation and ideas held in this report. Regardless, it's clear that coaches and GMs alike have used statistical analysis to their advantage when building the perfect game plans to winning -- an homage to the power of languages like R and its applicability in real life.
+
+## References
+
+2013-14 Los Angeles Clippers Roster and Stats. (n.d.). Basketball-Reference.Com. Retrieved April 6, 2020, from https://www.basketball-reference.com/teams/LAC/2014.html
+
+Applying multiple functions to data frame | R-bloggers. (n.d.). Retrieved April 6, 2020, from https://www.r-bloggers.com/applying-multiple-functions-to-data-frame/
+
+Data Visualization. (2016). Retrieved April 6, 2020, from https://socviz.co/lookatdata.html#why-look-at-data
+
+Franks, A., Miller, A., Bornn, L., Goldsberry K. (2015). Retrieved April 6, 2020, from https://pdfs.semanticscholar.org/1016/c66483e546eee19e0f1a5bdc811876950158.pdf
+
+Glossary. (2004). Basketball-Reference.Com. Retrieved April 6, 2020, from https://www.basketball-reference.com/about/glossary.html
+
+Grolemund, G., & Wickham, H. (2020). R for Data Science. Retrieved April 6, 2020, from https://r4ds.had.co.nz/
+
+Hofner, B. Using papeR with Markdown. (2020). Retrieved April 6, 2020, from https://cran.r-project.org/web/packages/papeR/vignettes/papeR_introduction.html
+
+HTHSCI 1M03: Introdution to Data Science. (2020). Retrieved April 6, 2020, from https://ptaitatmcmaster.github.io/HTHSCI_1M03_W2020/
+
+Irizarry, R. A. (2019). Introduction to data science: Data analysis and prediction algorithms with r. CRC Press.
+
+Marty, R., & Lucey, S. (2017). Retrieved April 6, 2020, from http://www.sloansportsconference.com/wp-content/uploads/2017/02/1505.pdf
+
+Melnick, M. J. (2001). Relationship between Team Assists and Win-Loss Record in the National Basketball Association. Perceptual and Motor Skills, 92(2), 595–602. https://doi.org/10.2466/pms.2001.92.2.595
+
+Mikołajec, K., Maszczyk, A., & Zając, T. (2013). Game Indicators Determining Sports Performance in the NBA. Journal of Human Kinetics, 37(1), 145–151. https://doi.org/10.2478/hukin-2013-0035
+
+NBA Advanced Stats. (2020). NBA.com/Stats. Retrieved April 6, 2020, from https://stats.nba.com/
+
+Romanowich, P., Bourret, J., & Vollmer, T. R. (2007). Further Analysis of the Matching Law to Describe Two- and Three-Point Shot Allocation by Professional Basketball Players. Journal of Applied Behavior Analysis, 40(2), 311–315. https://doi.org/10.1901/jaba.2007.119-05
+
+Silver, N. (2019, July 9). A Better Way To Evaluate NBA Defense. FiveThirtyEight. https://fivethirtyeight.com/features/a-better-way-to-evaluate-nba-defense/
+
+Teams Offensive Rebounding. (n.d.). NBA Stats. Retrieved April 6, 2020, from https://stats.nba.com/teams/offensive-rebounding/
+
+Transition defense has left offensive rebounds on the cutting room floor. (n.d.). Retrieved April 6, 2020, from https://www.espn.com/nba/story/_/id/14505051/transition-defense-left-offensive-rebounds-cutting-room-floor
